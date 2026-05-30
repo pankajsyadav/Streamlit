@@ -89,17 +89,49 @@ Generate detailed coaching with all five required sections.
 """.strip()
     return prompt
 
+def build_context_prompt(
+    role,
+    resume_text,
+    job_description_text,
+    high_skills,
+    med_skills,
+    low_skills,
+    evidence_text
+):
+    high_line = ", ".join(high_skills) if high_skills else "Not provided"
+    med_line = ", ".join(med_skills) if med_skills else "Not provided"
+    low_line = ", ".join(low_skills) if low_skills else "Not provided"
+
+    return f"""
+Current coaching context:
+
+Role bucket: {role}
+
+Weighted Skill Profile:
+High Priority: {high_line}
+Medium Priority: {med_line}
+Low Priority: {low_line}
+
+Requirement Evidence:
+{evidence_text if evidence_text.strip() else "No extra evidence provided."}
+
+Job Description:
+{job_description_text if job_description_text.strip() else "No job description provided."}
+
+Candidate Resume / Background:
+{resume_text if resume_text.strip() else "No resume text provided. Provide role-focused coaching based on skills only."}
+
+Use this context to answer the user's follow-up question conversationally. If they ask for a full review, still organize the answer into the five required sections.
+""".strip()
+
 def has_all_sections(text):
     return all(section in text for section in REQUIRED_SECTIONS)
 
-def call_model(api_key, model_name, system_prompt, user_prompt, temperature=0.3, max_tokens=900):
+def call_model(api_key, model_name, messages, temperature=0.3, max_tokens=900):
     client = OpenAI(api_key=api_key)
     resp = client.chat.completions.create(
         model=model_name,
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt}
-        ],
+        messages=messages,
         temperature=temperature,
         max_tokens=max_tokens
     )
@@ -107,6 +139,12 @@ def call_model(api_key, model_name, system_prompt, user_prompt, temperature=0.3,
 
 st.title("AI Career Coach - Fine-Tuned Model")
 st.caption("Role-specific coaching using weighted skill priorities and your fine-tuned OpenAI model.")
+
+if "chat_messages" not in st.session_state:
+    st.session_state.chat_messages = []
+
+if "chat_context_signature" not in st.session_state:
+    st.session_state.chat_context_signature = ""
 
 with st.sidebar:
     st.subheader("Configuration")
@@ -182,65 +220,91 @@ with col1:
         height=120,
         placeholder="- must have strong SQL\n- preferred cloud exposure\n- required analytics storytelling"
     )
-
-    run_btn = st.button("Generate Coaching", type="primary")
+    st.caption("Set the context here, then use the chat on the right to ask for coaching or follow-up questions.")
 
 with col2:
-    st.subheader("Output")
+    st.subheader("Chat")
+    st.caption("Ask for a full review or a follow-up question. The assistant will use the context you set on the left.")
 
-    if run_btn:
+    high_skills = parse_csv_skills(high_input)
+    med_skills = parse_csv_skills(med_input)
+    low_skills = parse_csv_skills(low_input)
+
+    context_signature = "||".join([
+        role,
+        resume_text,
+        job_description_text,
+        high_input,
+        med_input,
+        low_input,
+        evidence_input,
+    ])
+
+    if st.session_state.chat_context_signature != context_signature:
+        st.session_state.chat_messages = []
+        st.session_state.chat_context_signature = context_signature
+
+    for message in st.session_state.chat_messages:
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"])
+
+    if not st.session_state.chat_messages:
+        with st.chat_message("assistant"):
+            st.markdown("Share what you want to improve, and I’ll coach you using the role, resume, JD, and skill priorities you provided.")
+
+    user_message = st.chat_input("Ask for resume feedback, gap analysis, interview prep, or a follow-up...")
+
+    if user_message:
         if not api_key_input:
             st.error("Please provide OPENAI API key.")
         elif not model_name.strip():
             st.error("Please provide your fine-tuned model name.")
         else:
-            high_skills = parse_csv_skills(high_input)
-            med_skills = parse_csv_skills(med_input)
-            low_skills = parse_csv_skills(low_input)
+            st.session_state.chat_messages.append({"role": "user", "content": user_message})
 
-            user_prompt = build_user_prompt(
-                role=role,
-                resume_text=resume_text,
-                job_description_text=job_description_text, 
-                high_skills=high_skills,
-                med_skills=med_skills,
-                low_skills=low_skills,
-                evidence_text=evidence_input
-            )
+            messages = [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {
+                    "role": "system",
+                    "content": build_context_prompt(
+                        role=role,
+                        resume_text=resume_text,
+                        job_description_text=job_description_text,
+                        high_skills=high_skills,
+                        med_skills=med_skills,
+                        low_skills=low_skills,
+                        evidence_text=evidence_input,
+                    ),
+                },
+            ]
+            messages.extend(st.session_state.chat_messages)
 
-            with st.spinner("Calling fine-tuned model..."):
-                try:
-                    output = call_model(
-                        api_key=api_key_input,
-                        model_name=model_name.strip(),
-                        system_prompt=SYSTEM_PROMPT,
-                        user_prompt=user_prompt,
-                        temperature=temperature,
-                        max_tokens=max_tokens
-                    )
+            with st.chat_message("assistant"):
+                with st.spinner("Thinking..."):
+                    try:
+                        output = call_model(
+                            api_key=api_key_input,
+                            model_name=model_name.strip(),
+                            messages=messages,
+                            temperature=temperature,
+                            max_tokens=max_tokens,
+                        )
 
-                    st.success("Coaching generated.")
-                    st.markdown(output)
+                        st.markdown(output)
+                        section_ok = has_all_sections(output)
+                        st.caption("Section compliance: " + ("Pass" if section_ok else "Fail"))
 
-                    st.divider()
-                    section_ok = has_all_sections(output)
-                    st.write("Section compliance:", "Pass" if section_ok else "Fail")
+                        missing = [s for s in REQUIRED_SECTIONS if s not in output]
+                        if missing:
+                            st.warning("Missing sections: " + ", ".join(missing))
 
-                    missing = [s for s in REQUIRED_SECTIONS if s not in output]
-                    if missing:
-                        st.warning("Missing sections: " + ", ".join(missing))
+                        st.session_state.chat_messages.append({"role": "assistant", "content": output})
+                        st.rerun()
 
-                    st.download_button(
-                        label="Download Response (.txt)",
-                        data=output,
-                        file_name=f"career_coaching_{role.replace('/', '_')}.txt",
-                        mime="text/plain"
-                    )
-
-                except Exception as e:
-                    st.error(f"Error while calling model: {e}")
-    else:
-        st.info("Provide inputs and click Generate Coaching.")
+                    except Exception as e:
+                        error_message = f"Error while calling model: {e}"
+                        st.error(error_message)
+                        st.session_state.chat_messages.append({"role": "assistant", "content": error_message})
 
 with st.expander("Prompt Preview"):
     high_skills = parse_csv_skills(high_input)
