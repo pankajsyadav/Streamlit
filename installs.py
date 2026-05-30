@@ -1,6 +1,8 @@
-import subprocess
-import sys
+"""Do not install packages at app runtime.
 
-subprocess.check_call(
-	[sys.executable, "-m", "pip", "install", "-q", "scikit-learn", "streamlit", "pandas", "numpy"]
-)
+Use requirements.txt so Streamlit Cloud installs dependencies before
+the app starts.
+"""
+
+if __name__ == "__main__":
+    print("Dependencies are managed by requirements.txt.")
