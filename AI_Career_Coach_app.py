@@ -8,7 +8,7 @@ from openai import OpenAI
 st.set_page_config(page_title="AI Career Coach", page_icon="📈", layout="wide")
 
 SYSTEM_PROMPT = """You are an expert career coach specializing in data careers.
-Your role is to provide comprehensive, role-specific guidance that prioritizes skills based on job market demand and role specificity.
+Your role is to provide comprehensive, role-specific Brutally Truthful guidance that prioritizes skills based on job market demand and role specificity.
 
 Your guidance must always include these five sections:
 1. Strengths Assessment: Analyze strong areas and foundation skills
@@ -146,6 +146,9 @@ if "chat_messages" not in st.session_state:
 if "chat_context_signature" not in st.session_state:
     st.session_state.chat_context_signature = ""
 
+if "initial_coaching_ready" not in st.session_state:
+    st.session_state.initial_coaching_ready = False
+
 with st.sidebar:
     st.subheader("Configuration")
     api_key_input = st.text_input(
@@ -220,7 +223,14 @@ with col1:
         height=120,
         placeholder="- must have strong SQL\n- preferred cloud exposure\n- required analytics storytelling"
     )
-    st.caption("Set the context here, then use the chat on the right to ask for coaching or follow-up questions.")
+
+    submit_col, reset_col = st.columns(2)
+    with submit_col:
+        submit_context = st.button("Submit for Coaching", type="primary")
+    with reset_col:
+        reset_chat = st.button("Reset Chat")
+
+    st.caption("Submit the context first. The initial coaching response will appear on the right, then chat opens for follow-ups.")
 
 with col2:
     st.subheader("Chat")
@@ -243,22 +253,95 @@ with col2:
     if st.session_state.chat_context_signature != context_signature:
         st.session_state.chat_messages = []
         st.session_state.chat_context_signature = context_signature
+        st.session_state.initial_coaching_ready = False
+
+    if reset_chat:
+        st.session_state.chat_messages = []
+        st.session_state.initial_coaching_ready = False
 
     for message in st.session_state.chat_messages:
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
 
-    if not st.session_state.chat_messages:
+    if not st.session_state.initial_coaching_ready:
         with st.chat_message("assistant"):
-            st.markdown("Share what you want to improve, and I’ll coach you using the role, resume, JD, and skill priorities you provided.")
+            st.markdown("Submit the context on the left to generate the first coaching response.")
 
-    user_message = st.chat_input("Ask for resume feedback, gap analysis, interview prep, or a follow-up...")
+    if submit_context:
+        if not api_key_input:
+            st.error("Please provide OPENAI API key.")
+        elif not model_name.strip():
+            st.error("Please provide your fine-tuned model name.")
+        else:
+            st.session_state.chat_messages = []
+
+            initial_user_prompt = build_user_prompt(
+                role=role,
+                resume_text=resume_text,
+                job_description_text=job_description_text,
+                high_skills=high_skills,
+                med_skills=med_skills,
+                low_skills=low_skills,
+                evidence_text=evidence_input,
+            )
+
+            messages = [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {
+                    "role": "system",
+                    "content": build_context_prompt(
+                        role=role,
+                        resume_text=resume_text,
+                        job_description_text=job_description_text,
+                        high_skills=high_skills,
+                        med_skills=med_skills,
+                        low_skills=low_skills,
+                        evidence_text=evidence_input,
+                    ),
+                },
+                {"role": "user", "content": initial_user_prompt},
+            ]
+
+            with st.chat_message("assistant"):
+                with st.spinner("Generating initial coaching..."):
+                    try:
+                        output = call_model(
+                            api_key=api_key_input,
+                            model_name=model_name.strip(),
+                            messages=messages,
+                            temperature=temperature,
+                            max_tokens=max_tokens,
+                        )
+
+                        st.markdown(output)
+                        section_ok = has_all_sections(output)
+                        st.caption("Section compliance: " + ("Pass" if section_ok else "Fail"))
+
+                        missing = [s for s in REQUIRED_SECTIONS if s not in output]
+                        if missing:
+                            st.warning("Missing sections: " + ", ".join(missing))
+
+                        st.session_state.chat_messages = [
+                            {"role": "assistant", "content": output},
+                        ]
+                        st.session_state.initial_coaching_ready = True
+                        st.rerun()
+
+                    except Exception as e:
+                        error_message = f"Error while calling model: {e}"
+                        st.error(error_message)
+
+    user_message = None
+    if st.session_state.initial_coaching_ready:
+        user_message = st.chat_input("Ask for resume feedback, gap analysis, interview prep, or a follow-up...")
 
     if user_message:
         if not api_key_input:
             st.error("Please provide OPENAI API key.")
         elif not model_name.strip():
             st.error("Please provide your fine-tuned model name.")
+        elif not st.session_state.initial_coaching_ready:
+            st.warning("Submit the context first to generate the initial response.")
         else:
             st.session_state.chat_messages.append({"role": "user", "content": user_message})
 
